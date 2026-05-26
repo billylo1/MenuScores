@@ -21,6 +21,21 @@ enum RefreshInterval {
         default: return 15
         }
     }
+
+    /// Slower polling for non-live games to cut energy use while a game remains set.
+    static func effectiveInterval(userInterval: TimeInterval, gameState: String) -> TimeInterval {
+        switch gameState {
+        case "in":
+            return userInterval
+        case "pre":
+            // Auto-monitor only: infrequent checks until the game goes live.
+            return max(userInterval, 300)
+        case "post":
+            return max(userInterval, 300)
+        default:
+            return userInterval
+        }
+    }
 }
 
 /// Single main-run-loop timer for background score updates (replaces per-menu timers).
@@ -29,21 +44,22 @@ final class RefreshCoordinator {
     static let shared = RefreshCoordinator()
 
     private var timerCancellable: AnyCancellable?
-    private var interval: TimeInterval = 15
+    private var userInterval: TimeInterval = 15
     private var onTick: (() async -> Void)?
+    private var isTickInFlight = false
 
     private(set) var isActive = false
 
     private init() {}
 
     func configure(interval: TimeInterval, onTick: @escaping () async -> Void) {
-        self.interval = interval
+        userInterval = interval
         self.onTick = onTick
         reconcileTimer()
     }
 
-    func setInterval(_ interval: TimeInterval) {
-        self.interval = interval
+    func setUserInterval(_ interval: TimeInterval) {
+        userInterval = interval
         reconcileTimer()
     }
 
@@ -53,15 +69,27 @@ final class RefreshCoordinator {
         reconcileTimer()
     }
 
-    private func reconcileTimer() {
+    func reconcileTimer(gameState: String? = nil) {
+        let resolvedState = gameState ?? PinnedGameState.shared.gameState
         timerCancellable?.cancel()
         timerCancellable = nil
         guard isActive, let onTick else { return }
 
+        let interval = RefreshInterval.effectiveInterval(
+            userInterval: userInterval,
+            gameState: resolvedState
+        )
+
         timerCancellable = Timer.publish(every: interval, on: .main, in: .default)
             .autoconnect()
-            .sink { _ in
-                Task { await onTick() }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                guard !self.isTickInFlight else { return }
+                self.isTickInFlight = true
+                Task {
+                    await self.onTick?()
+                    self.isTickInFlight = false
+                }
             }
     }
 }

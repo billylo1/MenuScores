@@ -16,10 +16,6 @@ struct F1Menu: View {
 
 
 
-    @Binding var currentTitle: String
-    @Binding var currentGameID: String
-    @Binding var currentGameState: String
-    @Binding var previousGameState: String?
 
     @AppStorage("enableNotch") private var enableNotch = true
     @AppStorage("notchScreenIndex") private var notchScreenIndex = 0
@@ -36,11 +32,7 @@ struct F1Menu: View {
                 title: title,
                 viewModel: viewModel,
                 league: league,
-                fetchURL: fetchURL,
-                currentTitle: $currentTitle,
-                currentGameID: $currentGameID,
-                currentGameState: $currentGameState,
-                previousGameState: $previousGameState
+                fetchURL: fetchURL
             )
         }
     }
@@ -54,10 +46,6 @@ private struct F1MenuContent: View {
 
 
 
-    @Binding var currentTitle: String
-    @Binding var currentGameID: String
-    @Binding var currentGameState: String
-    @Binding var previousGameState: String?
 
     @AppStorage("enableNotch") private var enableNotch = true
     @AppStorage("notchScreenIndex") private var notchScreenIndex = 0
@@ -75,10 +63,13 @@ private struct F1MenuContent: View {
                             Divider().padding(.bottom)
                             Menu {
                                 Button {
-                                    currentTitle = displayText(for: game, league: league)
-                                    currentGameID = game.id
-                                    currentGameState = game.status.type.state
-                                    LeagueSelectionModel.shared.setPinnedDetailURL(from: game)
+                                    PinnedGameState.shared.pinToMenubar(
+                                            title: displayText(for: game, league: league),
+                                            gameID: game.id,
+                                            state: game.status.type.state,
+                                            league: league
+                                        )
+                                        LeagueSelectionModel.shared.setPinnedDetailURL(from: game)
                                 } label: {
                                     HStack {
                                         Image(systemName: "menubar.rectangle")
@@ -91,10 +82,12 @@ private struct F1MenuContent: View {
 
                                 if enableNotch {
                                     Button {
-                                        currentGameID = game.id
-                                        currentGameState = game.status.type.state
-
-                                        notchViewModel.game = game
+                                        PinnedGameState.shared.pinToNotch(
+                                            gameID: game.id,
+                                            state: game.status.type.state,
+                                            league: league
+                                        )
+                                            notchViewModel.game = game
                                         NotchViewModel.shared.currentGameID = game.id
 
                                         Task {

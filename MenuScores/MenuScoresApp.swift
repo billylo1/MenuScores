@@ -175,26 +175,93 @@ struct MenuScoresApp: App {
     }
 
     private var hasPinnedOrActiveNotch: Bool {
-        let hasPinnedGame = !currentGameID.isEmpty && currentGameID != "0"
-        return hasPinnedGame || NotchViewModel.shared.notch != nil
+        PinnedGameState.shared.hasActivePin || NotchViewModel.shared.notch != nil
+    }
+
+    @MainActor
+    private func shouldRunPeriodicRefresh() -> Bool {
+        let favoriteActive = autoMonitorEnabled
+            && !AutoMonitorFavorite.normalizedQuery(autoMonitorFavorite).isEmpty
+        if favoriteActive { return true }
+
+        guard hasPinnedOrActiveNotch else { return false }
+
+        // Scheduled games: no polling until they go live (use menu open or Refresh).
+        return PinnedGameState.shared.gameState != "pre"
     }
 
     @MainActor
     private func reconcileBackgroundRefresh() {
-        let favoriteActive = autoMonitorEnabled
-            && !AutoMonitorFavorite.normalizedQuery(autoMonitorFavorite).isEmpty
-        RefreshCoordinator.shared.setShouldRun(favoriteActive || hasPinnedOrActiveNotch)
+        RefreshCoordinator.shared.setShouldRun(shouldRunPeriodicRefresh())
+        RefreshCoordinator.shared.reconcileTimer(gameState: PinnedGameState.shared.gameState)
+    }
+
+    @MainActor
+    private func gamesViewModel(for league: String) -> GamesListView? {
+        switch league {
+        case "NHL": return nhlVM
+        case "HNCAAM": return hncaamVM
+        case "HNCAAF": return hncaafVM
+        case "NBA": return nbaVM
+        case "WNBA": return wnbaVM
+        case "NCAA M": return ncaamVM
+        case "NCAA F": return ncaafVM
+        case "NFL": return nflVM
+        case "FNCAA": return fncaaVM
+        case "MLB": return mlbVM
+        case "BNCAA": return bncaaVM
+        case "SNCAA": return sncaaVM
+        case "F1": return f1VM
+        case "NC": return ncVM
+        case "NCS": return ncsVM
+        case "NCT": return nctVM
+        case "IRL": return irlVM
+        case "PGA": return pgaVM
+        case "LPGA": return lpgaVM
+        case "MLS": return mlsVM
+        case "NWSL": return nwslVM
+        case "UEFA": return uefaVM
+        case "EUEFA": return euefaVM
+        case "WUEFA": return wuefaVM
+        case "EPL": return eplVM
+        case "WEPL": return weplVM
+        case "ESP": return espVM
+        case "GER": return gerVM
+        case "ITA": return itaVM
+        case "MEX": return mexVM
+        case "FRA": return fraVM
+        case "NED": return nedVM
+        case "POR": return porVM
+        case "FFWC": return ffwcVM
+        case "FFWWC": return ffwwcVM
+        case "FFWCQUEFA": return ffwcquefaVM
+        case "CONMEBOL": return conmebolVM
+        case "CONCACAF": return concacafVM
+        case "CAF": return cafVM
+        case "AFC": return afcVM
+        case "OFC": return ofcVM
+        case "NLL": return nllVM
+        case "PLL": return pllVM
+        case "LNCAAM": return lncaamVM
+        case "LNCAAF": return lncaafVM
+        case "VNCAAM": return vncaamVM
+        case "VNCAAF": return vncaafVM
+        case "OMIHC": return omihcVM
+        case "OWIHC": return owihcVM
+        default: return nil
+        }
     }
 
     @MainActor
     private func backgroundRefreshTick() async {
+        let pinned = PinnedGameState.shared
         var leaguesToRefresh = Set<String>()
 
         if autoMonitorEnabled {
             leaguesToRefresh.formUnion(AutoMonitorHub.shared.leaguesToRefreshThisTick())
         }
 
-        if hasPinnedOrActiveNotch {
+        if hasPinnedOrActiveNotch, pinned.gameState != "pre" {
             let league = LeagueSelectionModel.shared.currentLeague
             if !league.isEmpty {
                 leaguesToRefresh.insert(league)
@@ -212,16 +279,18 @@ struct MenuScoresApp: App {
         if hasPinnedOrActiveNotch {
             let league = LeagueSelectionModel.shared.currentLeague
             guard !league.isEmpty else { return }
+            let game = gamesViewModel(for: league)?.game(withID: pinned.gameID)
+            let priorState = pinned.gameState
             PinnedGameSync.syncStandardEvent(
-                gameID: currentGameID,
+                gameID: pinned.gameID,
                 league: league,
-                eventSources: buildScoreboardEventSources(),
-                currentTitle: &currentTitle,
-                currentGameState: &currentGameState,
-                previousGameState: &previousGameState,
+                game: game,
                 notiGameStart: notiGameStart,
                 notiGameComplete: notiGameComplete
             )
+            if pinned.gameState != priorState {
+                reconcileBackgroundRefresh()
+            }
         }
     }
 
@@ -307,8 +376,9 @@ struct MenuScoresApp: App {
     @MainActor
     private func syncCurrentGameDetailURL() {
         let model = LeagueSelectionModel.shared
+        let gameID = PinnedGameState.shared.gameID
         if model.currentGameDetailURL.isEmpty,
-           let resolved = resolveDetailsURL(for: currentGameID)
+           let resolved = resolveDetailsURL(for: gameID)
         {
             model.currentGameDetailURL = resolved.absoluteString
         }
@@ -316,11 +386,12 @@ struct MenuScoresApp: App {
 
     @MainActor
     private func openSetGameDetails() {
-        guard !currentTitle.isEmpty else { return }
+        let pinned = PinnedGameState.shared
+        guard !pinned.menubarTitle.isEmpty else { return }
 
         let model = LeagueSelectionModel.shared
         let urlString = model.currentGameDetailURL.isEmpty
-            ? resolveDetailsURL(for: currentGameID)?.absoluteString
+            ? resolveDetailsURL(for: pinned.gameID)?.absoluteString
             : model.currentGameDetailURL
 
         guard let urlString, !urlString.isEmpty, let url = URL(string: urlString) else { return }
@@ -336,13 +407,6 @@ struct MenuScoresApp: App {
 
     @AppStorage("notiGameStart") private var notiGameStart = false
     @AppStorage("notiGameComplete") private var notiGameComplete = false
-
-    // Title State Settings
-
-    @State var currentTitle: String = ""
-    @State var currentGameID: String = "0"
-    @State var currentGameState: String = "pre"
-    @State private var previousGameState: String? = nil
 
     // Notch Data
 
@@ -430,7 +494,7 @@ struct MenuScoresApp: App {
                     Text("Open Set Game Details")
                 }
             }
-            .disabled(currentTitle.isEmpty)
+            .disabled(PinnedGameState.shared.menubarTitle.isEmpty)
             .stableMenuBarItem("menu-open-details")
 
             Divider()
@@ -441,11 +505,7 @@ struct MenuScoresApp: App {
                     title: "NHL",
                     viewModel: nhlVM,
                     league: "NHL",
-                    fetchURL: Scoreboard.Urls.nhl,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.nhl
                 )
             }
 
@@ -454,11 +514,7 @@ struct MenuScoresApp: App {
                     title: "NCAA M Hockey",
                     viewModel: hncaamVM,
                     league: "HNCAAM",
-                    fetchURL: Scoreboard.Urls.hncaam,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.hncaam
                 )
             }
 
@@ -467,11 +523,7 @@ struct MenuScoresApp: App {
                     title: "NCAA F Hockey",
                     viewModel: hncaafVM,
                     league: "HNCAAF",
-                    fetchURL: Scoreboard.Urls.hncaaf,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.hncaaf
                 )
             }
 
@@ -480,11 +532,7 @@ struct MenuScoresApp: App {
                     title: "NBA",
                     viewModel: nbaVM,
                     league: "NBA",
-                    fetchURL: Scoreboard.Urls.nba,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.nba
                 )
             }
 
@@ -493,11 +541,7 @@ struct MenuScoresApp: App {
                     title: "WNBA",
                     viewModel: wnbaVM,
                     league: "WNBA",
-                    fetchURL: Scoreboard.Urls.wnba,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.wnba
                 )
             }
 
@@ -506,11 +550,7 @@ struct MenuScoresApp: App {
                     title: "NCAA M Basketball",
                     viewModel: ncaamVM,
                     league: "NCAA M",
-                    fetchURL: Scoreboard.Urls.ncaam,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ncaam
                 )
             }
 
@@ -519,11 +559,7 @@ struct MenuScoresApp: App {
                     title: "NCAA F Basketball",
                     viewModel: ncaafVM,
                     league: "NCAA F",
-                    fetchURL: Scoreboard.Urls.ncaaf,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ncaaf
                 )
             }
 
@@ -532,11 +568,7 @@ struct MenuScoresApp: App {
                     title: "NFL",
                     viewModel: nflVM,
                     league: "NFL",
-                    fetchURL: Scoreboard.Urls.nfl,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.nfl
                 )
             }
 
@@ -545,11 +577,7 @@ struct MenuScoresApp: App {
                     title: "NCAA Football",
                     viewModel: fncaaVM,
                     league: "FNCAA",
-                    fetchURL: Scoreboard.Urls.fncaa,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.fncaa
                 )
             }
 
@@ -558,11 +586,7 @@ struct MenuScoresApp: App {
                     title: "MLB",
                     viewModel: mlbVM,
                     league: "MLB",
-                    fetchURL: Scoreboard.Urls.mlb,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.mlb
                 )
             }
 
@@ -571,11 +595,7 @@ struct MenuScoresApp: App {
                     title: "NCAA Baseball",
                     viewModel: bncaaVM,
                     league: "BNCAA",
-                    fetchURL: Scoreboard.Urls.bncaa,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.bncaa
                 )
             }
 
@@ -584,11 +604,7 @@ struct MenuScoresApp: App {
                     title: "NCAA Softball",
                     viewModel: sncaaVM,
                     league: "SNCAA",
-                    fetchURL: Scoreboard.Urls.sncaa,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.sncaa
                 )
             }
 
@@ -597,11 +613,7 @@ struct MenuScoresApp: App {
                     title: "MLS",
                     viewModel: mlsVM,
                     league: "MLS",
-                    fetchURL: Scoreboard.Urls.mls,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.mls
                 )
             }
 
@@ -610,11 +622,7 @@ struct MenuScoresApp: App {
                     title: "NWSL",
                     viewModel: nwslVM,
                     league: "NWSL",
-                    fetchURL: Scoreboard.Urls.nwsl,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.nwsl
                 )
             }
 
@@ -623,11 +631,7 @@ struct MenuScoresApp: App {
                     title: "Champions League",
                     viewModel: uefaVM,
                     league: "UEFA",
-                    fetchURL: Scoreboard.Urls.uefa,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.uefa
                 )
             }
 
@@ -636,11 +640,7 @@ struct MenuScoresApp: App {
                     title: "Europa Champions League",
                     viewModel: euefaVM,
                     league: "EUEFA",
-                    fetchURL: Scoreboard.Urls.euefa,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.euefa
                 )
             }
 
@@ -649,11 +649,7 @@ struct MenuScoresApp: App {
                     title: "Womans Champions League",
                     viewModel: wuefaVM,
                     league: "WUEFA",
-                    fetchURL: Scoreboard.Urls.wuefa,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.wuefa
                 )
             }
 
@@ -662,11 +658,7 @@ struct MenuScoresApp: App {
                     title: "Premier League",
                     viewModel: eplVM,
                     league: "EPL",
-                    fetchURL: Scoreboard.Urls.epl,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.epl
                 )
             }
 
@@ -675,11 +667,7 @@ struct MenuScoresApp: App {
                     title: "Women's Super League",
                     viewModel: weplVM,
                     league: "WEPL",
-                    fetchURL: Scoreboard.Urls.wepl,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.wepl
                 )
             }
 
@@ -688,11 +676,7 @@ struct MenuScoresApp: App {
                     title: "La Liga",
                     viewModel: espVM,
                     league: "ESP",
-                    fetchURL: Scoreboard.Urls.esp,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.esp
                 )
             }
 
@@ -701,11 +685,7 @@ struct MenuScoresApp: App {
                     title: "Budesliga",
                     viewModel: gerVM,
                     league: "GER",
-                    fetchURL: Scoreboard.Urls.ger,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ger
                 )
             }
 
@@ -714,11 +694,7 @@ struct MenuScoresApp: App {
                     title: "Serie A",
                     viewModel: itaVM,
                     league: "ITA",
-                    fetchURL: Scoreboard.Urls.ita,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ita
                 )
             }
 
@@ -727,11 +703,7 @@ struct MenuScoresApp: App {
                     title: "Liga MX",
                     viewModel: mexVM,
                     league: "MEX",
-                    fetchURL: Scoreboard.Urls.mex,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.mex
                 )
             }
 
@@ -740,11 +712,7 @@ struct MenuScoresApp: App {
                     title: "Ligue 1",
                     viewModel: fraVM,
                     league: "FRA",
-                    fetchURL: Scoreboard.Urls.fra,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.fra
                 )
             }
 
@@ -753,11 +721,7 @@ struct MenuScoresApp: App {
                     title: "Eredivisie",
                     viewModel: nedVM,
                     league: "NED",
-                    fetchURL: Scoreboard.Urls.ned,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ned
                 )
             }
 
@@ -766,11 +730,7 @@ struct MenuScoresApp: App {
                     title: "Primeira Liga",
                     viewModel: porVM,
                     league: "POR",
-                    fetchURL: Scoreboard.Urls.por,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.por
                 )
             }
 
@@ -779,11 +739,7 @@ struct MenuScoresApp: App {
                     title: "F1",
                     viewModel: f1VM,
                     league: "F1",
-                    fetchURL: Scoreboard.Urls.f1,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.f1
                 )
             }
 
@@ -792,11 +748,7 @@ struct MenuScoresApp: App {
                     title: "Nascar Premier",
                     viewModel: ncVM,
                     league: "NC",
-                    fetchURL: Scoreboard.Urls.nc,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.nc
                 )
             }
 
@@ -805,11 +757,7 @@ struct MenuScoresApp: App {
                     title: "Nascar Secondary",
                     viewModel: ncsVM,
                     league: "NCS",
-                    fetchURL: Scoreboard.Urls.ncs,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ncs
                 )
             }
 
@@ -818,11 +766,7 @@ struct MenuScoresApp: App {
                     title: "Nascar Truck",
                     viewModel: nctVM,
                     league: "NCT",
-                    fetchURL: Scoreboard.Urls.nct,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.nct
                 )
             }
 
@@ -831,11 +775,7 @@ struct MenuScoresApp: App {
                     title: "IndyCar",
                     viewModel: irlVM,
                     league: "IRL",
-                    fetchURL: Scoreboard.Urls.irl,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.irl
                 )
             }
 
@@ -844,11 +784,7 @@ struct MenuScoresApp: App {
                     title: "PGA",
                     viewModel: pgaVM,
                     league: "PGA",
-                    fetchURL: Scoreboard.Urls.pga,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.pga
                 )
             }
 
@@ -857,11 +793,7 @@ struct MenuScoresApp: App {
                     title: "LPGA",
                     viewModel: lpgaVM,
                     league: "LPGA",
-                    fetchURL: Scoreboard.Urls.lpga,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.lpga
                 )
             }
 
@@ -870,11 +802,7 @@ struct MenuScoresApp: App {
                     title: "ATP Tour",
                     viewModel: atpVM,
                     league: "ATP",
-                    fetchURL: Scoreboard.Urls.atp,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.atp
                 )
             }
 
@@ -883,11 +811,7 @@ struct MenuScoresApp: App {
                     title: "WTA Tour",
                     viewModel: wtaVM,
                     league: "WTA",
-                    fetchURL: Scoreboard.Urls.wta,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.wta
                 )
             }
 
@@ -909,11 +833,7 @@ struct MenuScoresApp: App {
                     title: "NLL",
                     viewModel: nllVM,
                     league: "NLL",
-                    fetchURL: Scoreboard.Urls.nll,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.nll
                 )
             }
 
@@ -922,11 +842,7 @@ struct MenuScoresApp: App {
                     title: "PLL",
                     viewModel: pllVM,
                     league: "PLL",
-                    fetchURL: Scoreboard.Urls.pll,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.pll
                 )
             }
 
@@ -935,11 +851,7 @@ struct MenuScoresApp: App {
                     title: "NCAA M Lacrosse",
                     viewModel: lncaamVM,
                     league: "LNCAAM",
-                    fetchURL: Scoreboard.Urls.lncaam,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.lncaam
                 )
             }
 
@@ -948,11 +860,7 @@ struct MenuScoresApp: App {
                     title: "NCAA F Lacrosse",
                     viewModel: lncaafVM,
                     league: "LNCAAF",
-                    fetchURL: Scoreboard.Urls.lncaaf,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.lncaaf
                 )
             }
 
@@ -961,11 +869,7 @@ struct MenuScoresApp: App {
                     title: "NCAA M Volleyball",
                     viewModel: vncaamVM,
                     league: "VNCAAM",
-                    fetchURL: Scoreboard.Urls.vncaam,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.vncaam
                 )
             }
 
@@ -974,11 +878,7 @@ struct MenuScoresApp: App {
                     title: "NCAA F Volleyball",
                     viewModel: vncaafVM,
                     league: "VNCAAF",
-                    fetchURL: Scoreboard.Urls.vncaaf,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.vncaaf
                 )
             }
 
@@ -987,11 +887,7 @@ struct MenuScoresApp: App {
                     title: "Men's Olympic Ice Hcokey",
                     viewModel: omihcVM,
                     league: "OMIHC",
-                    fetchURL: Scoreboard.Urls.omihc,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.omihc
                 )
             }
 
@@ -1000,11 +896,7 @@ struct MenuScoresApp: App {
                     title: "Women's Olympic Ice Hcokey",
                     viewModel: owihcVM,
                     league: "OWIHC",
-                    fetchURL: Scoreboard.Urls.owihc,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.owihc
                 )
             }
 
@@ -1013,11 +905,7 @@ struct MenuScoresApp: App {
                     title: "FIFA World Cup",
                     viewModel: ffwcVM,
                     league: "FFWC",
-                    fetchURL: Scoreboard.Urls.ffwc,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ffwc
                 )
             }
 
@@ -1026,11 +914,7 @@ struct MenuScoresApp: App {
                     title: "FIFA Women's World Cup",
                     viewModel: ffwwcVM,
                     league: "FFWWC",
-                    fetchURL: Scoreboard.Urls.ffwwc,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ffwwc
                 )
             }
 
@@ -1039,11 +923,7 @@ struct MenuScoresApp: App {
                     title: "FIFA World Cup UEFA Qualifiers",
                     viewModel: ffwcquefaVM,
                     league: "FFWCQUEFA",
-                    fetchURL: Scoreboard.Urls.ffwcquefa,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ffwcquefa
                 )
             }
 
@@ -1052,11 +932,7 @@ struct MenuScoresApp: App {
                     title: "FIFA World Cup CONMEBOL Qualifiers",
                     viewModel: conmebolVM,
                     league: "CONMEBOL",
-                    fetchURL: Scoreboard.Urls.conmebol,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.conmebol
                 )
             }
 
@@ -1065,11 +941,7 @@ struct MenuScoresApp: App {
                     title: "FIFA World Cup CONCACAF Qualifiers",
                     viewModel: concacafVM,
                     league: "CONCACAF",
-                    fetchURL: Scoreboard.Urls.concacaf,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.concacaf
                 )
             }
 
@@ -1078,11 +950,7 @@ struct MenuScoresApp: App {
                     title: "FIFA World Cup African Qualifiers",
                     viewModel: cafVM,
                     league: "CAF",
-                    fetchURL: Scoreboard.Urls.caf,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.caf
                 )
             }
 
@@ -1091,11 +959,7 @@ struct MenuScoresApp: App {
                     title: "FIFA World Cup Asian Qualifiers",
                     viewModel: afcVM,
                     league: "AFC",
-                    fetchURL: Scoreboard.Urls.afc,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.afc
                 )
             }
 
@@ -1104,11 +968,7 @@ struct MenuScoresApp: App {
                     title: "FIFA World Cup Oceanian Qualifiers",
                     viewModel: ofcVM,
                     league: "OFC",
-                    fetchURL: Scoreboard.Urls.ofc,
-                    currentTitle: $currentTitle,
-                    currentGameID: $currentGameID,
-                    currentGameState: $currentGameState,
-                    previousGameState: $previousGameState
+                    fetchURL: Scoreboard.Urls.ofc
                 )
             }
 
@@ -1136,11 +996,7 @@ struct MenuScoresApp: App {
             .stableMenuBarItem("menu-refresh")
 
             Button {
-                currentTitle = ""
-                currentGameID = ""
-                currentGameState = ""
-                LeagueSelectionModel.shared.currentGameDetailURL = ""
-                previousGameState = nil
+                PinnedGameState.shared.clear()
 
                 Task {
                     if let notch = NotchViewModel.shared.notch {
@@ -1183,41 +1039,44 @@ struct MenuScoresApp: App {
             .keyboardShortcut("q")
             .stableMenuBarItem("menu-quit")
         } label: {
-            HStack {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                Text(currentTitle)
-            }
-            .onChange(of: currentGameID) { _ in
-                syncCurrentGameDetailURL()
-                reconcileBackgroundRefresh()
-            }
+            MenuBarStatusLabel(
+                onPinnedGameIDChange: {
+                    syncCurrentGameDetailURL()
+                    reconcileBackgroundRefresh()
+                },
+                onAppearAction: {
+                    PinnedGameState.shared.onPinStateChanged = {
+                        syncCurrentGameDetailURL()
+                        reconcileBackgroundRefresh()
+                    }
+                    AutoMonitorHub.shared.configure(
+                        isEnabled: { autoMonitorEnabled },
+                        favoriteRaw: { autoMonitorFavorite },
+                        enabledLeagues: { enabledLeagueCodes() },
+                        eventSources: { buildScoreboardEventSources() },
+                        tennisSources: { buildTennisSources() },
+                        apply: { title, id, state, league in
+                            PinnedGameState.shared.applyAutoMonitor(
+                                title: title,
+                                gameID: id,
+                                state: state,
+                                league: league
+                            )
+                            syncCurrentGameDetailURL()
+                            reconcileBackgroundRefresh()
+                        }
+                    )
+                    RefreshCoordinator.shared.configure(interval: refreshInterval) {
+                        await backgroundRefreshTick()
+                    }
+                    reconcileBackgroundRefresh()
+                    Task { await backgroundRefreshTick() }
+                }
+            )
             .onChange(of: autoMonitorEnabled) { _ in reconcileBackgroundRefresh() }
             .onChange(of: autoMonitorFavorite) { _ in reconcileBackgroundRefresh() }
             .onChange(of: selectedOption) { _ in
-                RefreshCoordinator.shared.setInterval(refreshInterval)
-            }
-            .onAppear {
-                AutoMonitorHub.shared.configure(
-                    isEnabled: { autoMonitorEnabled },
-                    favoriteRaw: { autoMonitorFavorite },
-                    enabledLeagues: { enabledLeagueCodes() },
-                    eventSources: { buildScoreboardEventSources() },
-                    tennisSources: { buildTennisSources() },
-                    apply: { title, id, state, league in
-                        let priorForTransition = (currentGameID == id) ? currentGameState : nil
-                        currentTitle = title
-                        currentGameID = id
-                        currentGameState = state
-                        previousGameState = priorForTransition
-                        LeagueSelectionModel.shared.currentLeague = league
-                        syncCurrentGameDetailURL()
-                    }
-                )
-                RefreshCoordinator.shared.configure(interval: refreshInterval) {
-                    await backgroundRefreshTick()
-                }
-                reconcileBackgroundRefresh()
-                Task { await backgroundRefreshTick() }
+                RefreshCoordinator.shared.setUserInterval(refreshInterval)
             }
         }
 

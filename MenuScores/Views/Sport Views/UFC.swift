@@ -16,11 +16,6 @@ struct UFCMenu: View {
 
     @StateObject private var notchViewModel = NotchViewModel()
 
-    @Binding var currentTitle: String
-    @Binding var currentGameID: String
-    @Binding var currentGameState: String
-    @Binding var previousGameState: String?
-
     @AppStorage("enableNotch") private var enableNotch = true
     @AppStorage("notchScreenIndex") private var notchScreenIndex = 0
 
