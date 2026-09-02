@@ -18,8 +18,19 @@ final class AutoMonitorHub {
 
     private var autoMonitorScanIndex = 0
     private var lastMatchedLeague: String?
+    private(set) var needsCacheBootstrap = true
 
     private init() {}
+
+    func resetForFavoriteChange() {
+        autoMonitorScanIndex = 0
+        lastMatchedLeague = nil
+        needsCacheBootstrap = true
+    }
+
+    func markCachesBootstrapped() {
+        needsCacheBootstrap = false
+    }
 
     func configure(
         isEnabled: @escaping () -> Bool,
@@ -63,13 +74,9 @@ final class AutoMonitorHub {
             return
         }
 
-        if lastMatchedLeague != nil {
-            lastMatchedLeague = nil
-        } else {
-            let leagues = enabledLeagues()
-            if !leagues.isEmpty {
-                autoMonitorScanIndex = (autoMonitorScanIndex + 1) % leagues.count
-            }
+        let leagues = enabledLeagues()
+        if !leagues.isEmpty {
+            autoMonitorScanIndex = (autoMonitorScanIndex + 1) % leagues.count
         }
     }
 

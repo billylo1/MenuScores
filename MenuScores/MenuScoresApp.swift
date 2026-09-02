@@ -258,7 +258,13 @@ struct MenuScoresApp: App {
         var leaguesToRefresh = Set<String>()
 
         if autoMonitorEnabled {
-            leaguesToRefresh.formUnion(AutoMonitorHub.shared.leaguesToRefreshThisTick())
+            let hub = AutoMonitorHub.shared
+            if hub.needsCacheBootstrap {
+                await refreshAllLeagues()
+                hub.markCachesBootstrapped()
+            } else {
+                leaguesToRefresh.formUnion(hub.leaguesToRefreshThisTick())
+            }
         }
 
         if hasPinnedOrActiveNotch, pinned.gameState != "pre" {
@@ -1073,8 +1079,20 @@ struct MenuScoresApp: App {
                     Task { await backgroundRefreshTick() }
                 }
             )
-            .onChange(of: autoMonitorEnabled) { _ in reconcileBackgroundRefresh() }
-            .onChange(of: autoMonitorFavorite) { _ in reconcileBackgroundRefresh() }
+            .onChange(of: autoMonitorEnabled) { enabled in
+                if enabled {
+                    AutoMonitorHub.shared.resetForFavoriteChange()
+                }
+                reconcileBackgroundRefresh()
+                if enabled {
+                    Task { await backgroundRefreshTick() }
+                }
+            }
+            .onChange(of: autoMonitorFavorite) { _ in
+                AutoMonitorHub.shared.resetForFavoriteChange()
+                reconcileBackgroundRefresh()
+                Task { await backgroundRefreshTick() }
+            }
             .onChange(of: selectedOption) { _ in
                 RefreshCoordinator.shared.setUserInterval(refreshInterval)
             }
